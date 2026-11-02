@@ -2,7 +2,7 @@
 
 import { Check, ChevronLeft, ChevronRight, MoreHorizontal, Paperclip, Pencil, Plus, Search, Trash2, X } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useDeferredValue, useState } from "react";
+import { Suspense, useState } from "react";
 import { useMonth } from "@/components/month-context";
 import { ClosedMonthNotice, EmptyState, ErrorState, Money, PageHeader, TableSkeleton } from "@/components/common";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
@@ -22,10 +22,11 @@ import {
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api, mediaUrl } from "@/lib/api/client";
-import { qk, useApiMutation, useCategories, useExpenses, useMonthMembers } from "@/lib/api/hooks";
+import { patchRow, qk, removeRow, useApiMutation, useCategories, useExpenses, useMonthMembers } from "@/lib/api/hooks";
 import type { Expense } from "@/lib/api/types";
 import { formatDate, formatMoney } from "@/lib/format";
 import { useI18n } from "@/lib/i18n/provider";
+import { useDebouncedValue } from "@/lib/use-debounced-value";
 import { usePermissions } from "@/lib/use-permissions";
 
 const PAGE_SIZE = 25;
@@ -55,17 +56,25 @@ function ExpensesView() {
   const [status, setStatus] = useState(params.get("status") ?? "");
   const [source, setSource] = useState("");
   const [page, setPage] = useState(1);
-  const deferredSearch = useDeferredValue(search);
+  const debouncedSearch = useDebouncedValue(search.trim(), 350);
   const [editing, setEditing] = useState<Expense | "new" | null>(params.get("new") ? "new" : null);
   const [deleting, setDeleting] = useState<Expense | null>(null);
 
-  const filters = { search: deferredSearch, category, purchaser, status, payment_source: source, page, page_size: PAGE_SIZE, ordering: "-date" };
+  const filters = { search: debouncedSearch, category, purchaser, status, payment_source: source, page, page_size: PAGE_SIZE, ordering: "-date" };
   const { data, isLoading, error, refetch, isPlaceholderData } = useExpenses(monthId, filters);
 
   const act = useApiMutation(
     ({ id, action }: { id: number; action: "approve" | "reject" | "delete" }) =>
       action === "delete" ? api(`expenses/${id}`, { method: "DELETE" }) : api(`expenses/${id}/${action}`, { method: "POST" }),
-    { invalidate: [qk.month(monthId)], success: t("common.done") },
+    {
+      invalidate: [qk.month(monthId)],
+      success: t("common.done"),
+      optimistic: ({ id, action }) => {
+        const lists = [...qk.month(monthId), "expenses"];
+        if (action === "delete") return [removeRow<Expense>(lists, id, (e) => Number(e.amount))];
+        return [patchRow<Expense>(lists, id, { status: action === "approve" ? "approved" : "rejected" })];
+      },
+    },
   );
 
   const closeForm = () => {
@@ -282,7 +291,11 @@ function ExpensesView() {
         confirmLabel={t("common.delete")}
         destructive
         pending={act.isPending}
-        onConfirm={() => deleting && act.mutate({ id: deleting.id, action: "delete" }, { onSuccess: () => setDeleting(null) })}
+        onConfirm={() => {
+          if (!deleting) return;
+          act.mutate({ id: deleting.id, action: "delete" }); // optimistic: a failure restores the row and shows an error
+          setDeleting(null);
+        }}
       />
     </>
   );

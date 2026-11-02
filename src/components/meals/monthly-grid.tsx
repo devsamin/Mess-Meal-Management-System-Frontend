@@ -1,11 +1,44 @@
 "use client";
 
+import { memo } from "react";
 import { useMonth } from "@/components/month-context";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/common";
 import { useMealGrid } from "@/lib/api/hooks";
-import { formatNumber, todayISO } from "@/lib/format";
+import type { MealGrid } from "@/lib/api/types";
+import { formatNumber, todayISO, type Lang } from "@/lib/format";
 import { useI18n } from "@/lib/i18n/provider";
 import { cn } from "@/lib/utils";
+
+/**
+ * One member's row. Memoised: query data is structurally shared, so a background refetch that changed one
+ * member leaves every other row's props untouched and React skips them.
+ */
+const GridRow = memo(function GridRow({
+  row,
+  days,
+  today,
+  lang,
+}: {
+  row: MealGrid["rows"][number];
+  days: string[];
+  today: string;
+  lang: Lang;
+}) {
+  return (
+    <tr className="hover:bg-muted/40">
+      <td className="sticky left-0 z-10 max-w-36 truncate bg-card px-3 py-1.5 text-sm font-medium">{row.name}</td>
+      {days.map((d) => {
+        const v = row.days[d];
+        return (
+          <td key={d} className={cn("px-1 py-1.5 text-center", d === today && "bg-primary/10", v === "0" && "text-muted-foreground/40")}>
+            {v === "0" ? "·" : formatNumber(v, lang)}
+          </td>
+        );
+      })}
+      <td className="sticky right-0 bg-card px-3 py-1.5 text-right text-sm font-semibold">{formatNumber(row.total, lang)}</td>
+    </tr>
+  );
+});
 
 /** Member × day totals — the familiar spreadsheet view, read-only. Click a day to edit it. */
 export function MonthlyGrid({ onPickDate }: { onPickDate: (date: string) => void }) {
@@ -42,18 +75,7 @@ export function MonthlyGrid({ onPickDate }: { onPickDate: (date: string) => void
         </thead>
         <tbody className="divide-y">
           {data.rows.map((r) => (
-            <tr key={r.member_id} className="hover:bg-muted/40">
-              <td className="sticky left-0 z-10 max-w-36 truncate bg-card px-3 py-1.5 text-sm font-medium">{r.name}</td>
-              {data.days.map((d) => {
-                const v = r.days[d];
-                return (
-                  <td key={d} className={cn("px-1 py-1.5 text-center", d === today && "bg-primary/10", v === "0" && "text-muted-foreground/40")}>
-                    {v === "0" ? "·" : formatNumber(v, lang)}
-                  </td>
-                );
-              })}
-              <td className="sticky right-0 bg-card px-3 py-1.5 text-right text-sm font-semibold">{formatNumber(r.total, lang)}</td>
-            </tr>
+            <GridRow key={r.member_id} row={r} days={data.days} today={today} lang={lang} />
           ))}
         </tbody>
         <tfoot>

@@ -92,7 +92,9 @@ export async function api<T = unknown>(path: string, opts: RequestOptions = {}):
   let res: Response;
   try {
     res = await fetch(`/api/backend/${clean}${buildQuery(opts.query)}`, init);
-  } catch {
+  } catch (err) {
+    // A request cancelled by TanStack Query (superseded search, unmounted page) is not an error to show.
+    if (err instanceof DOMException && err.name === "AbortError") throw err;
     throw new ApiError(0, "Network error. Check your connection.");
   }
 

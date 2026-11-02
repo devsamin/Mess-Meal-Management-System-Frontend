@@ -1,7 +1,8 @@
 "use client";
 
 import { ChevronLeft, ChevronRight, Copy, Eraser, Loader2, Save, Sparkles, Undo2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { memo, useCallback, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useMonth } from "@/components/month-context";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/common";
@@ -17,7 +18,7 @@ import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api/client";
 import { qk, useApiMutation, useDaySheet } from "@/lib/api/hooks";
 import { MEAL_TYPES, type DaySheet, type MealType } from "@/lib/api/types";
-import { clampISO, formatDate, formatNumber, shiftISODate, todayISO } from "@/lib/format";
+import { clampISO, formatDate, formatNumber, shiftISODate, todayISO, type Lang } from "@/lib/format";
 import { useI18n } from "@/lib/i18n/provider";
 import { cn } from "@/lib/utils";
 
@@ -28,9 +29,60 @@ type Edits = Record<string, string>; // `${memberId}:${mealType}` -> quantity
 const keyOf = (memberId: number, meal: MealType) => `${memberId}:${meal}`;
 const same = (a: string, b: string) => Number(a) === Number(b);
 
+type Entry = { member: number; meal_type: MealType; quantity: string };
+
+/** What the day sheet will look like once `entries` are saved (shown immediately, before the server replies). */
+function applySaved(sheet: DaySheet, entries: Entry[]): DaySheet {
+  const patches = new Map<number, Partial<Record<MealType, string>>>();
+  for (const e of entries) patches.set(e.member, { ...patches.get(e.member), [e.meal_type]: String(Number(e.quantity)) });
+  const sum = (xs: string[]) => String(xs.reduce((s, x) => s + Number(x), 0));
+  const rows = sheet.rows.map((r) => {
+    const patch = patches.get(r.member_id);
+    if (!patch) return r;
+    const meals = { ...r.meals, ...patch };
+    return { ...r, meals, total: sum(MEAL_TYPES.map((m) => meals[m])) };
+  });
+  const totals = Object.fromEntries(MEAL_TYPES.map((m) => [m, sum(rows.map((r) => r.meals[m]))])) as Record<MealType, string>;
+  return { ...sheet, rows, totals: { ...totals, total: sum(MEAL_TYPES.map((m) => totals[m])) } };
+}
+
+interface MealCellProps {
+  memberId: number;
+  meal: MealType;
+  label: string;
+  value: string;
+  edited: boolean;
+  editable: boolean;
+  lang: Lang;
+  onCycle: (memberId: number, meal: MealType) => void;
+}
+
+/** One tap target. Memoised: tapping a cell re-renders that cell, not all of the day's 60+ buttons. */
+const MealCell = memo(function MealCell({ memberId, meal, label, value, edited, editable, lang, onCycle }: MealCellProps) {
+  return (
+    <td className="p-1">
+      <button
+        type="button"
+        disabled={!editable}
+        onClick={() => onCycle(memberId, meal)}
+        aria-label={label}
+        className={cn(
+          "tabular h-10 w-full rounded-lg border text-base font-semibold transition-colors select-none disabled:cursor-not-allowed",
+          Number(value) > 0 ? "border-primary/30 bg-primary/10 text-foreground" : "border-transparent bg-muted/40 text-muted-foreground",
+          edited && "ring-2 ring-status-warning",
+          editable && "hover:border-primary/60 active:scale-[0.97]",
+        )}
+      >
+        {Number(value) === 0 ? "–" : Number(value) === 0.5 ? "½" : formatNumber(value, lang)}
+      </button>
+    </td>
+  );
+});
+
 export function DailyEntry({ date, onDateChange }: { date: string; onDateChange: (d: string) => void }) {
   const { t, lang } = useI18n();
   const { month, monthId } = useMonth();
+  const qc = useQueryClient();
   const { data, isLoading, isFetching, error, refetch } = useDaySheet(monthId, date);
   const [edits, setEdits] = useState<Edits>({});
   const [pendingDate, setPendingDate] = useState<string | null>(null);
@@ -51,22 +103,35 @@ export function DailyEntry({ date, onDateChange }: { date: string; onDateChange:
   }, [edits, sheet]);
 
   const save = useApiMutation(
-    () =>
-      api<{ saved: number; deleted: number }>("meals/bulk", {
-        method: "POST",
-        json: { account: monthId, date, entries: changes.map(({ member, meal_type, quantity }) => ({ member, meal_type, quantity })) },
-      }),
-    { invalidate: [qk.month(monthId)], success: t("meals.saved") },
+    (entries: Entry[]) => api<{ saved: number; deleted: number }>("meals/bulk", { method: "POST", json: { account: monthId, date, entries } }),
+    {
+      invalidate: [qk.month(monthId)],
+      success: t("meals.saved"),
+      optimistic: (entries) => [
+        { queryKey: [...qk.month(monthId), "day", date], update: (old) => applySaved(old as DaySheet, entries) },
+      ],
+    },
   );
 
-  const setCell = (memberId: number, meal: MealType, q: string) =>
-    setEdits((prev) => ({ ...prev, [keyOf(memberId, meal)]: q }));
-
-  const cycle = (memberId: number, meal: MealType) => {
-    const current = value(memberId, meal);
-    const idx = CYCLE.findIndex((c) => same(c, current));
-    setCell(memberId, meal, CYCLE[(idx + 1) % CYCLE.length]);
+  const submit = () => {
+    const previous = edits;
+    const entries = changes.map(({ member, meal_type, quantity }) => ({ member, meal_type, quantity }));
+    // The sheet already shows the new numbers; if the server refuses, put the edits back so nothing is lost.
+    save.mutate(entries, { onError: () => setEdits(previous) });
+    setEdits({});
   };
+
+  // Stable between renders so the memoised cells do not re-render when an unrelated cell changes.
+  const cycle = useCallback(
+    (memberId: number, meal: MealType) =>
+      setEdits((prev) => {
+        const k = keyOf(memberId, meal);
+        const current = prev[k] ?? sheet?.rows.find((r) => r.member_id === memberId)?.meals[meal] ?? "0";
+        const idx = CYCLE.findIndex((c) => same(c, current));
+        return { ...prev, [k]: CYCLE[(idx + 1) % CYCLE.length] };
+      }),
+    [sheet],
+  );
 
   const editableRows = sheet?.rows.filter((r) => r.editable) ?? [];
 
@@ -91,7 +156,13 @@ export function DailyEntry({ date, onDateChange }: { date: string; onDateChange:
       return;
     }
     try {
-      const prev = await api<DaySheet>("meals/day", { query: { month: monthId, date: shiftISODate(date, -1) } });
+      const previousDate = shiftISODate(date, -1);
+      // Through the query cache: reuses an already-loaded sheet and shares an in-flight request.
+      const prev = await qc.fetchQuery({
+        queryKey: [...qk.month(monthId), "day", previousDate],
+        queryFn: ({ signal }) => api<DaySheet>("meals/day", { query: { month: monthId, date: previousDate }, signal }),
+        staleTime: 30_000,
+      });
       const next: Edits = { ...edits };
       for (const r of editableRows) {
         const p = prev.rows.find((x) => x.member_id === r.member_id);
@@ -199,22 +270,17 @@ export function DailyEntry({ date, onDateChange }: { date: string; onDateChange:
                     const v = value(row.member_id, m);
                     const edited = keyOf(row.member_id, m) in edits && !same(v, row.meals[m]);
                     return (
-                      <td key={m} className="p-1">
-                        <button
-                          type="button"
-                          disabled={!row.editable}
-                          onClick={() => cycle(row.member_id, m)}
-                          aria-label={`${row.name} ${t(`meals.${m}`)}: ${v}`}
-                          className={cn(
-                            "tabular h-10 w-full rounded-lg border text-base font-semibold transition-colors select-none disabled:cursor-not-allowed",
-                            Number(v) > 0 ? "border-primary/30 bg-primary/10 text-foreground" : "border-transparent bg-muted/40 text-muted-foreground",
-                            edited && "ring-2 ring-status-warning",
-                            row.editable && "hover:border-primary/60 active:scale-[0.97]",
-                          )}
-                        >
-                          {Number(v) === 0 ? "–" : Number(v) === 0.5 ? "½" : formatNumber(v, lang)}
-                        </button>
-                      </td>
+                      <MealCell
+                        key={m}
+                        memberId={row.member_id}
+                        meal={m}
+                        label={`${row.name} ${t(`meals.${m}`)}: ${v}`}
+                        value={v}
+                        edited={edited}
+                        editable={row.editable}
+                        lang={lang}
+                        onCycle={cycle}
+                      />
                     );
                   })}
                 </tr>
@@ -245,7 +311,7 @@ export function DailyEntry({ date, onDateChange }: { date: string; onDateChange:
             <Button variant="ghost" size="sm" onClick={() => setEdits({})} disabled={save.isPending}>
               <Undo2 /> {t("common.discard")}
             </Button>
-            <Button onClick={() => save.mutate(undefined, { onSuccess: () => setEdits({}) })} disabled={save.isPending}>
+            <Button onClick={submit} disabled={save.isPending}>
               {save.isPending ? <Loader2 className="animate-spin" /> : <Save />}
               {t("common.save")}
             </Button>

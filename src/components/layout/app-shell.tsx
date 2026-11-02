@@ -13,7 +13,7 @@ import { useI18n } from "@/lib/i18n/provider";
 import { MonthProvider } from "@/components/month-context";
 import { MonthSwitcher } from "@/components/layout/month-switcher";
 import { NAV_ITEMS } from "@/components/layout/nav";
-import { Avatar, AvatarImage } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -78,23 +78,31 @@ function UserMenu() {
     qc.clear();
     router.replace("/login");
   };
-  const name = me?.first_name || me?.member?.name || me?.username || "";
+  const fullName = [me?.first_name, me?.last_name].filter(Boolean).join(" ");
+  const name = fullName || me?.member?.name || me?.username || "";
+  const role = me?.is_manager ? t("roles.manager") : t("roles.member");
 
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
-        render={<Button variant="ghost" size="icon" className="rounded-full" aria-label={t("nav.account")} />}
+        render={<Button variant="ghost" className="h-10 gap-2 rounded-full px-1 sm:pr-3" aria-label={t("nav.account")} />}
       >
         <Avatar className="size-8">
-          <AvatarImage src="/logo.png" alt={name} className="object-contain" />
+          <AvatarFallback className="bg-primary text-xs font-semibold uppercase text-primary-foreground">
+            {name.slice(0, 2)}
+          </AvatarFallback>
         </Avatar>
+        <span className="hidden min-w-0 flex-col items-start text-left leading-tight sm:flex">
+          <span className="max-w-32 truncate text-sm font-medium">{name}</span>
+          <span className="text-[11px] font-normal text-muted-foreground">{role}</span>
+        </span>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-56">
         <DropdownMenuGroup>
           <DropdownMenuLabel>
             <div className="truncate font-medium text-foreground">{name}</div>
             <div className="text-xs font-normal">
-              @{me?.username} · {me?.is_manager ? t("roles.manager") : t("roles.member")}
+              @{me?.username} · {role}
             </div>
           </DropdownMenuLabel>
         </DropdownMenuGroup>
@@ -175,7 +183,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               <Menu className="size-5" />
             </Button>
             <MonthSwitcher />
-            <div className="ml-auto flex items-center gap-1">{isLoading ? <Skeleton className="size-8 rounded-full" /> : <UserMenu />}</div>
+            <div className="ml-auto flex items-center gap-1">{isLoading ? <Skeleton className="h-8 w-24 rounded-full" /> : <UserMenu />}</div>
           </header>
 
           <main className="print-full mx-auto w-full max-w-7xl flex-1 px-3 pt-4 pb-24 sm:px-6 sm:pt-6 lg:pb-10">

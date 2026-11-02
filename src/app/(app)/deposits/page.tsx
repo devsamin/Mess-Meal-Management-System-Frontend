@@ -18,7 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ApiError, api } from "@/lib/api/client";
-import { qk, useApiMutation, useDeposits, useMonthMembers, useSummary } from "@/lib/api/hooks";
+import { qk, removeRow, useApiMutation, useDeposits, useMonthMembers, useSummary } from "@/lib/api/hooks";
 import type { Deposit } from "@/lib/api/types";
 import { formatDate, formatMoney } from "@/lib/format";
 import { useI18n } from "@/lib/i18n/provider";
@@ -165,6 +165,10 @@ export default function DepositsPage() {
   const del = useApiMutation((id: number) => api(`deposits/${id}`, { method: "DELETE" }), {
     invalidate: [qk.month(monthId)],
     success: t("common.deleted"),
+    // The list total is net of refunds, so removing a refund raises it.
+    optimistic: (id) => [
+      removeRow<Deposit>([...qk.month(monthId), "deposits"], id, (d) => (d.kind === "refund" ? -1 : 1) * Number(d.amount)),
+    ],
   });
 
   if (!monthsLoading && months.length === 0) return <StartFirstMonth />;
@@ -298,7 +302,11 @@ export default function DepositsPage() {
         confirmLabel={t("common.delete")}
         destructive
         pending={del.isPending}
-        onConfirm={() => deleting && del.mutate(deleting.id, { onSuccess: () => setDeleting(null) })}
+        onConfirm={() => {
+          if (!deleting) return;
+          del.mutate(deleting.id); // optimistic: the row is already gone; a failure restores it and shows an error
+          setDeleting(null);
+        }}
       />
     </>
   );

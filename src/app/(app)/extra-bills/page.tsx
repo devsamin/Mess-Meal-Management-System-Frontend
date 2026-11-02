@@ -15,7 +15,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { api, fieldError } from "@/lib/api/client";
-import { qk, useApiMutation, useExtraBills, useMonthMembers } from "@/lib/api/hooks";
+import { qk, removeRow, useApiMutation, useExtraBills, useMonthMembers } from "@/lib/api/hooks";
 import type { ExtraBill, PaymentSource } from "@/lib/api/types";
 import { formatDate, formatMoney } from "@/lib/format";
 import { useI18n } from "@/lib/i18n/provider";
@@ -200,6 +200,7 @@ export default function ExtraBillsPage() {
   const del = useApiMutation((id: number) => api(`extra-bills/${id}`, { method: "DELETE" }), {
     invalidate: [qk.month(monthId)],
     success: t("common.deleted"),
+    optimistic: (id) => [removeRow<ExtraBill>([...qk.month(monthId), "bills"], id, (b) => Number(b.amount))],
   });
 
   if (!monthsLoading && months.length === 0) return <StartFirstMonth />;
@@ -287,7 +288,11 @@ export default function ExtraBillsPage() {
         confirmLabel={t("common.delete")}
         destructive
         pending={del.isPending}
-        onConfirm={() => deleting && del.mutate(deleting.id, { onSuccess: () => setDeleting(null) })}
+        onConfirm={() => {
+          if (!deleting) return;
+          del.mutate(deleting.id); // optimistic: the row is already gone; a failure restores it and shows an error
+          setDeleting(null);
+        }}
       />
     </>
   );
